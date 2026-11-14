@@ -1,66 +1,48 @@
-# Use Runpod PyTorch base image
-FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
-# Set environment variables
+# RunPod development image with CUDA 12.9
+FROM runpod/pytorch:2.2.0-rc.229-cu1290-torch291-ubuntu2404
+
+ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV UV_CACHE_DIR=/tmp/uv-cache
+ENV UV_LINK_MODE=copy
+ENV HF_HOME=/workspace/huggingface
+ENV TRITON_CACHE_DIR=/tmp/triton-cache
+ENV TORCH_HOME=/tmp/torch-cache
 
-# Set the working directory
-WORKDIR /app
-
-# Install system dependencies if needed
-RUN apt-get update --yes && \
-    DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+# Useful development tools
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    git git-lfs curl wget tmux vim nano htop \
+    build-essential ninja-build cmake && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install uv
 RUN pip install --no-cache-dir uv
 
-# Copy requirements file
-COPY requirements.txt /app/
+# Create a separate Python 3.12 environment
+RUN uv python install 3.12 && \
+    uv venv --python 3.12 /opt/llm
 
-# Install Python dependencies with uv
-RUN uv pip install --system --break-system-packages -r requirements.txt
+ENV VIRTUAL_ENV=/opt/llm
+ENV PATH="/opt/llm/bin:${PATH}"
 
-# Copy application files
-COPY . /app
+# Install vLLM with its matching PyTorch dependencies
+RUN uv pip install --python /opt/llm/bin/python \
+    "vllm==0.33.0" --torch-backend=cu130
 
-# ============================================================================
-# OPTION 1: Keep everything from base image (Jupyter, SSH, entrypoint) - DEFAULT
-# ============================================================================
-# The base image already provides everything:
-# - Entrypoint: /opt/nvidia/nvidia_entrypoint.sh (handles CUDA setup)
-# - Default CMD: /start.sh (starts Jupyter/SSH automatically based on template settings)
-# - Jupyter Notebook (starts if startJupyter=true in template)
-# - SSH access (starts if startSsh=true in template)
-#
-# Just don't override CMD - the base image handles everything!
-# CMD is not set, so base image default (/start.sh) is used
+# Install training and data libraries
+COPY requirements.txt /tmp/requirements.txt
 
-# ============================================================================
-# OPTION 2: Override CMD but keep entrypoint and services
-# ============================================================================
-# If you want to run your own command but still have Jupyter/SSH start:
-# - Keep the entrypoint (CUDA setup still happens automatically)
-# - Use the provided run.sh script which starts /start.sh in background,
-#   then runs your application commands
-#
-# Edit run.sh to customize what runs after services start, then uncomment:
-# COPY run.sh /app/run.sh
-# RUN chmod +x /app/run.sh
-# CMD ["/app/run.sh"]
-#
-# The run.sh script:
-# 1. Starts /start.sh in background (starts Jupyter/SSH)
-# 2. Waits for services to initialize
-# 3. Runs your application commands
-# 4. Waits for background processes
+RUN uv pip install --python /opt/llm/bin/python \
+    -r /tmp/requirements.txt && \
+    uv pip check --python /opt/llm/bin/python && \
+    rm -rf /tmp/uv-cache
 
-# ============================================================================
-# OPTION 3: Override everything - no Jupyter, no SSH, just your app
-# ============================================================================
-# If you don't want any base image services, override both entrypoint and CMD:
-#
-# ENTRYPOINT []  # Clear entrypoint
-# CMD ["python", "/app/main.py"]
+# Basic import test
+RUN python -c "import torch, vllm, trl, datasets; print('Imports OK')"
 
+WORKDIR /workspace
+
+# Preserve RunPod's original SSH/Jupyter startup
